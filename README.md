@@ -1,6 +1,3 @@
-// =====================================
-// 5. README.md
-// =====================================
 # DeFi Liquidity Pool Screener
 
 Real-time APR calculator for PancakeSwap & Uniswap liquidity pools.
