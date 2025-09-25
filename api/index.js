@@ -1,218 +1,213 @@
-// api/index.js - Final Complete Version
+// api/index.js - Direct query to DEX subgraphs for real data
 const axios = require('axios');
 const NodeCache = require('node-cache');
 
-const cache = new NodeCache({ stdTTL: 300 }); // 5 minute cache
+const cache = new NodeCache({ stdTTL: 300 });
 
-// Fetch ALL pools from DeFi Llama
-async function fetchDefiLlamaPools() {
-    try {
-        console.log('Fetching ALL pools from DeFi Llama...');
-        
-        const response = await axios.get('https://yields.llama.fi/pools', {
-            timeout: 30000,
-            headers: {
-                'Accept': 'application/json',
-                'User-Agent': 'Mozilla/5.0'
+// Subgraph endpoints
+const SUBGRAPHS = {
+    'uniswap-v3-ethereum': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3',
+    'uniswap-v3-polygon': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-polygon',
+    'uniswap-v3-arbitrum': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-arbitrum',
+    'uniswap-v3-optimism': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-optimism',
+    'uniswap-v3-base': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-base',
+    'uniswap-v3-bnb': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-bnb',
+    'uniswap-v2': 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v2',
+    'pancakeswap-v3-bsc': 'https://api.thegraph.com/subgraphs/name/pancakeswap/exchange-v3-bsc',
+    'pancakeswap-v2': 'https://api.thegraph.com/subgraphs/name/pancakeswap/exchange',
+    'sushiswap': 'https://api.thegraph.com/subgraphs/name/sushiswap/exchange',
+};
+
+// Query Uniswap V3 pools with real-time data
+async function fetchUniswapV3Pools(chain = 'ethereum') {
+    const subgraphUrl = SUBGRAPHS[`uniswap-v3-${chain}`];
+    if (!subgraphUrl) return [];
+    
+    const query = `{
+        pools(first: 200, orderBy: totalValueLockedUSD, orderDirection: desc, where: {totalValueLockedUSD_gt: "1000"}) {
+            id
+            token0 { symbol, decimals, derivedETH }
+            token1 { symbol, decimals, derivedETH }
+            feeTier
+            liquidity
+            totalValueLockedUSD
+            totalValueLockedToken0
+            totalValueLockedToken1
+            volumeUSD
+            feesUSD
+            poolDayData(first: 7, orderBy: date, orderDirection: desc) {
+                date
+                volumeUSD
+                feesUSD
+                tvlUSD
             }
-        });
+        }
+    }`;
+    
+    try {
+        const response = await axios.post(subgraphUrl, { query }, { timeout: 15000 });
         
-        if (response.data && response.data.data) {
-            const allPools = response.data.data;
-            console.log(`Fetched ${allPools.length} total pools from DeFi Llama`);
-            
-            // Filter only DEX pools (not lending, etc) with minimal filtering
-            const dexPools = allPools.filter(pool => {
-                if (!pool.project) return false;
+        if (response.data && response.data.data && response.data.data.pools) {
+            return response.data.data.pools.map(pool => {
+                // Get latest day data
+                const dayData = pool.poolDayData && pool.poolDayData[0] || {};
+                const volume24h = parseFloat(dayData.volumeUSD || pool.volumeUSD || 0);
+                const fees24h = parseFloat(dayData.feesUSD || pool.feesUSD || 0);
+                const tvl = parseFloat(pool.totalValueLockedUSD || 0);
                 
-                // List of DEX projects (expanded list)
-                const dexKeywords = [
-                    'swap', 'dex', 'amm', 'exchange', 
-                    'uniswap', 'pancakeswap', 'sushiswap', 
-                    'curve', 'balancer', 'quickswap', 
-                    'trader-joe', 'spooky', 'spirit',
-                    'biswap', 'apeswap', 'camelot',
-                    'velodrome', 'aerodrome', 'thena',
-                    'raydium', 'orca', 'serum',
-                    'osmosis', 'astroport', 'terraswap',
-                    'kyberswap', 'dodo', 'platypus',
-                    'wombat', 'maverick', 'izumi',
-                    'algebra', 'zyberswap', 'baseswap'
-                ];
-                
-                const projectLower = pool.project.toLowerCase();
-                const isDex = dexKeywords.some(keyword => projectLower.includes(keyword));
-                
-                // Include if it's a DEX
-                if (!isDex) return false;
-                
-                // Very minimal TVL filter - only exclude tiny pools
-                if (!pool.tvlUsd || pool.tvlUsd < 1000) return false;
-                
-                // Must have valid symbol
-                if (!pool.symbol) return false;
-                
-                return true;
-            });
-            
-            console.log(`Filtered to ${dexPools.length} DEX pools`);
-            
-            // Transform to our format
-            return dexPools.map(pool => {
-                // Parse token pair
-                let token0 = '';
-                let token1 = '';
-                
-                // Handle different symbol formats
-                const symbol = pool.symbol || '';
-                if (symbol.includes('-')) {
-                    const parts = symbol.split('-');
-                    token0 = parts[0] || '';
-                    token1 = parts.slice(1).join('-') || '';
-                } else if (symbol.includes('/')) {
-                    [token0, token1] = symbol.split('/');
-                } else {
-                    // Single token or complex format
-                    token0 = symbol;
-                    token1 = '';
-                }
-                
-                // Clean up tokens
-                token0 = token0.trim();
-                token1 = token1.trim();
-                
-                // Normalize DEX names
-                let dexName = pool.project.toLowerCase();
-                if (dexName.includes('pancake')) dexName = 'pancakeswap';
-                else if (dexName.includes('uniswap')) dexName = 'uniswap';
-                else if (dexName.includes('sushi')) dexName = 'sushiswap';
-                else if (dexName.includes('curve')) dexName = 'curve';
-                else if (dexName.includes('balancer')) dexName = 'balancer';
-                else if (dexName.includes('quickswap')) dexName = 'quickswap';
-                else if (dexName.includes('trader-joe')) dexName = 'traderjoe';
-                else if (dexName.includes('velodrome')) dexName = 'velodrome';
-                else if (dexName.includes('aerodrome')) dexName = 'aerodrome';
-                else if (dexName.includes('thena')) dexName = 'thena';
-                else if (dexName.includes('camelot')) dexName = 'camelot';
-                else if (dexName.includes('raydium')) dexName = 'raydium';
-                else if (dexName.includes('orca')) dexName = 'orca';
-                else if (dexName.includes('biswap')) dexName = 'biswap';
-                else if (dexName.includes('apeswap')) dexName = 'apeswap';
-                else if (dexName.includes('spooky')) dexName = 'spookyswap';
-                else if (dexName.includes('spirit')) dexName = 'spiritswap';
-                else if (dexName.includes('kyber')) dexName = 'kyberswap';
-                else dexName = pool.project.toLowerCase().replace(/[-\s]/g, '');
-                
-                // Determine version
-                let version = 'V2';
-                if (pool.project.includes('v3') || pool.project.includes('V3')) {
-                    version = 'V3';
-                } else if (pool.project.includes('v1') || pool.project.includes('V1')) {
-                    version = 'V1';
-                }
-                
-                // Normalize chain names
-                let chain = (pool.chain || 'unknown').toLowerCase();
-                const chainMap = {
-                    'binance': 'bsc',
-                    'bsc': 'bsc',
-                    'ethereum': 'eth',
-                    'polygon': 'polygon',
-                    'avalanche': 'avax',
-                    'fantom': 'ftm',
-                    'arbitrum': 'arbitrum',
-                    'optimism': 'optimism',
-                    'base': 'base',
-                    'gnosis': 'gnosis',
-                    'celo': 'celo',
-                    'moonbeam': 'moonbeam',
-                    'cronos': 'cronos',
-                    'aurora': 'aurora',
-                    'metis': 'metis',
-                    'kava': 'kava',
-                    'zksync': 'zksync',
-                    'linea': 'linea',
-                    'scroll': 'scroll',
-                    'manta': 'manta',
-                    'mode': 'mode',
-                    'blast': 'blast'
-                };
-                chain = chainMap[chain] || chain;
-                
-                // Get volume (use provided or estimate)
-                const volume24h = pool.volumeUsd1d || pool.volumeUsd7d / 7 || (pool.tvlUsd * 0.02);
-                
-                // Get all APY values
-                const apyTotal = pool.apy || 0;
-                const apyBase = pool.apyBase || 0;
-                const apyReward = pool.apyReward || 0;
-                
-                // Use the highest APY available
-                const apr = Math.max(apyTotal, apyBase, apyBase + apyReward);
-                
-                // Estimate fee tier
-                let feeTier = 0.003;
-                if (dexName === 'pancakeswap') feeTier = 0.0025;
-                else if (dexName === 'uniswap' && version === 'V3') feeTier = 0.003;
-                else if (dexName === 'curve') feeTier = 0.0004;
-                else if (dexName === 'balancer') feeTier = 0.002;
-                
-                // Generate pool URL
-                const poolUrls = {
-                    'pancakeswap': 'https://pancakeswap.finance/liquidity',
-                    'uniswap': 'https://app.uniswap.org/pools',
-                    'sushiswap': 'https://www.sushi.com/pool',
-                    'curve': 'https://curve.fi/pools',
-                    'balancer': 'https://app.balancer.fi/#/pools',
-                    'quickswap': 'https://quickswap.exchange/#/pools',
-                    'traderjoe': 'https://traderjoexyz.com/pool',
-                    'velodrome': 'https://app.velodrome.finance/liquidity',
-                    'aerodrome': 'https://aerodrome.finance/liquidity',
-                    'thena': 'https://www.thena.fi/liquidity',
-                    'camelot': 'https://app.camelot.exchange/liquidity',
-                    'raydium': 'https://raydium.io/liquidity',
-                    'orca': 'https://www.orca.so/pools',
-                    'biswap': 'https://biswap.org/liquidity',
-                    'apeswap': 'https://apeswap.finance/liquidity',
-                    'spookyswap': 'https://spooky.fi/#/add',
-                    'spiritswap': 'https://www.spiritswap.finance/liquidity'
-                };
+                // Calculate real APR based on fees
+                const apr = tvl > 0 ? (fees24h * 365 / tvl) * 100 : 0;
                 
                 return {
-                    id: pool.pool || `${dexName}-${token0}-${token1}`,
-                    pair: token1 ? `${token0}/${token1}` : token0,
-                    dex: dexName,
-                    version: version,
+                    id: pool.id,
+                    pair: `${pool.token0.symbol}/${pool.token1.symbol}`,
+                    dex: 'uniswap',
+                    version: 'V3',
                     chain: chain,
-                    tvl: pool.tvlUsd || 0,
+                    tvl: tvl,
                     volume24h: volume24h,
-                    feeTier: feeTier,
-                    token0: token0,
-                    token1: token1,
-                    apyTotal: apyTotal,
-                    apyBase: apyBase,
-                    apyReward: apyReward,
-                    apr: apr, // Main APR to display
-                    ilRisk: pool.ilRisk || 'unknown',
-                    exposure: pool.exposure || 'multi',
-                    stablecoin: pool.stablecoin || false,
-                    poolUrl: poolUrls[dexName] || '#',
-                    project: pool.project // Keep original project name
+                    fees24h: fees24h,
+                    feeTier: parseInt(pool.feeTier) / 10000, // Convert to percentage
+                    token0: pool.token0.symbol,
+                    token1: pool.token1.symbol,
+                    apr: apr,
+                    feeApr: apr,
+                    liquidity: pool.liquidity
                 };
             });
         }
-        
-        return [];
-        
     } catch (error) {
-        console.error('Error fetching from DeFi Llama:', error.message);
-        throw error;
+        console.error(`Error fetching Uniswap V3 ${chain}:`, error.message);
     }
+    
+    return [];
 }
 
-// Main Vercel handler
+// Query PancakeSwap pools
+async function fetchPancakeSwapPools() {
+    const queries = [
+        // V3 query
+        {
+            url: SUBGRAPHS['pancakeswap-v3-bsc'],
+            query: `{
+                pools(first: 200, orderBy: totalValueLockedUSD, orderDirection: desc, where: {totalValueLockedUSD_gt: "1000"}) {
+                    id
+                    token0 { symbol }
+                    token1 { symbol }
+                    feeTier
+                    totalValueLockedUSD
+                    volumeUSD
+                    feesUSD
+                }
+            }`,
+            version: 'V3'
+        },
+        // V2 query
+        {
+            url: SUBGRAPHS['pancakeswap-v2'],
+            query: `{
+                pairs(first: 200, orderBy: reserveUSD, orderDirection: desc, where: {reserveUSD_gt: "1000"}) {
+                    id
+                    token0 { symbol }
+                    token1 { symbol }
+                    reserveUSD
+                    volumeUSD
+                }
+            }`,
+            version: 'V2'
+        }
+    ];
+    
+    let allPools = [];
+    
+    for (const { url, query, version } of queries) {
+        try {
+            const response = await axios.post(url, { query }, { timeout: 15000 });
+            
+            if (response.data && response.data.data) {
+                const pools = response.data.data.pools || response.data.data.pairs || [];
+                
+                const formattedPools = pools.map(pool => {
+                    const tvl = parseFloat(pool.totalValueLockedUSD || pool.reserveUSD || 0);
+                    const volume24h = parseFloat(pool.volumeUSD || 0) / 7; // Rough daily estimate
+                    const feeTier = version === 'V3' ? parseInt(pool.feeTier) / 10000 : 0.0025;
+                    const fees24h = volume24h * feeTier;
+                    const apr = tvl > 0 ? (fees24h * 365 / tvl) * 100 : 0;
+                    
+                    return {
+                        id: pool.id,
+                        pair: `${pool.token0.symbol}/${pool.token1.symbol}`,
+                        dex: 'pancakeswap',
+                        version: version,
+                        chain: 'bsc',
+                        tvl: tvl,
+                        volume24h: volume24h,
+                        fees24h: fees24h,
+                        feeTier: feeTier,
+                        token0: pool.token0.symbol,
+                        token1: pool.token1.symbol,
+                        apr: apr,
+                        feeApr: apr
+                    };
+                });
+                
+                allPools = allPools.concat(formattedPools);
+            }
+        } catch (error) {
+            console.error(`Error fetching PancakeSwap ${version}:`, error.message);
+        }
+    }
+    
+    return allPools;
+}
+
+// Combine with DeFi Llama for additional APR data
+async function enrichWithDefiLlama(pools) {
+    try {
+        const response = await axios.get('https://yields.llama.fi/pools', {
+            timeout: 20000,
+            headers: { 'Accept': 'application/json' }
+        });
+        
+        if (response.data && response.data.data) {
+            const defiLlamaPools = response.data.data;
+            
+            // Create a map for quick lookup
+            const llamaMap = new Map();
+            defiLlamaPools.forEach(pool => {
+                // Try to match by symbol and project
+                const key = `${pool.symbol}-${pool.project}`.toLowerCase();
+                llamaMap.set(key, pool);
+            });
+            
+            // Enrich our pools with DeFi Llama APR data
+            return pools.map(pool => {
+                const key1 = `${pool.pair.replace('/', '-')}-${pool.dex}`.toLowerCase();
+                const key2 = `${pool.token0}-${pool.token1}-${pool.dex}`.toLowerCase();
+                
+                const llamaPool = llamaMap.get(key1) || llamaMap.get(key2);
+                
+                if (llamaPool) {
+                    // Use DeFi Llama APR if it's higher (includes rewards)
+                    const llamaApr = llamaPool.apy || llamaPool.apyBase || 0;
+                    if (llamaApr > pool.apr) {
+                        pool.apr = llamaApr;
+                        pool.apyReward = llamaPool.apyReward || 0;
+                    }
+                }
+                
+                return pool;
+            });
+        }
+    } catch (error) {
+        console.error('Error enriching with DeFi Llama:', error.message);
+    }
+    
+    return pools;
+}
+
+// Main handler
 module.exports = async (req, res) => {
-    // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -223,7 +218,6 @@ module.exports = async (req, res) => {
     
     const url = new URL(req.url, `http://${req.headers.host}`);
     const pathname = url.pathname;
-    const searchParams = url.searchParams;
     
     // Health check
     if (pathname === '/api/health') {
@@ -239,15 +233,14 @@ module.exports = async (req, res) => {
         cache.flushAll();
         return res.status(200).json({
             success: true,
-            message: 'Cache cleared',
-            timestamp: new Date().toISOString()
+            message: 'Cache cleared'
         });
     }
     
     // Get pools
     if (pathname.startsWith('/api/pools/')) {
         const dex = pathname.split('/').pop().toLowerCase();
-        const chain = searchParams.get('chain')?.toLowerCase() || 'all';
+        const chain = url.searchParams.get('chain')?.toLowerCase() || 'all';
         
         try {
             // Check cache
@@ -255,98 +248,116 @@ module.exports = async (req, res) => {
             const cachedData = cache.get(cacheKey);
             
             if (cachedData && cachedData.length > 0) {
-                console.log(`Returning ${cachedData.length} cached pools`);
                 return res.status(200).json({
                     success: true,
                     data: cachedData,
-                    source: 'defi-llama',
                     cached: true,
                     count: cachedData.length,
                     timestamp: new Date().toISOString()
                 });
             }
             
-            // Fetch fresh data
-            console.log(`Fetching fresh pools data...`);
-            let allPools = await fetchDefiLlamaPools();
+            let allPools = [];
             
-            // Filter by DEX if specified
-            if (dex !== 'all') {
-                allPools = allPools.filter(pool => pool.dex === dex);
-                console.log(`Filtered to ${allPools.length} ${dex} pools`);
+            // Fetch based on DEX selection
+            if (dex === 'all' || dex === 'uniswap') {
+                // Fetch from multiple Uniswap chains
+                const chains = chain === 'all' 
+                    ? ['ethereum', 'polygon', 'arbitrum', 'optimism', 'base', 'bnb']
+                    : [chain === 'eth' ? 'ethereum' : chain];
+                
+                for (const c of chains) {
+                    const uniPools = await fetchUniswapV3Pools(c);
+                    allPools = allPools.concat(uniPools);
+                }
             }
             
-            // Filter by chain if specified
+            if (dex === 'all' || dex === 'pancakeswap') {
+                if (chain === 'all' || chain === 'bsc') {
+                    const pancakePools = await fetchPancakeSwapPools();
+                    allPools = allPools.concat(pancakePools);
+                }
+            }
+            
+            // Enrich with DeFi Llama data for better APR
+            allPools = await enrichWithDefiLlama(allPools);
+            
+            // Filter by chain if needed
             if (chain !== 'all') {
                 allPools = allPools.filter(pool => pool.chain === chain);
-                console.log(`Filtered to ${allPools.length} pools on ${chain}`);
             }
             
-            // Calculate fees and APR
-            const poolsWithCalculations = allPools.map(pool => {
-                // Calculate daily fees
-                const fees24h = pool.volume24h * pool.feeTier;
-                
-                // Calculate fee-based APR (if not provided)
-                const feeApr = pool.tvl > 0 ? (fees24h * 365 / pool.tvl) * 100 : 0;
-                
-                // Use DeFi Llama APR if available, otherwise use calculated
-                const finalApr = pool.apr > 0 ? pool.apr : feeApr;
-                
-                return {
-                    ...pool,
-                    fees24h: fees24h,
-                    feeApr: feeApr,
-                    apr: finalApr,
-                    totalApr: finalApr + (pool.apyReward || 0)
-                };
-            });
+            // Sort by APR
+            allPools.sort((a, b) => b.apr - a.apr);
             
-            // Sort by APR (highest first)
-            poolsWithCalculations.sort((a, b) => b.apr - a.apr);
-            
-            // DON'T filter out high APR pools - show everything!
-            // Users can filter themselves using the UI
-            
-            // Limit to top 1000 pools to avoid too much data
-            const topPools = poolsWithCalculations.slice(0, 1000);
-            
-            // Cache if we have data
-            if (topPools.length > 0) {
-                cache.set(cacheKey, topPools);
-                console.log(`Cached ${topPools.length} pools`);
+            // Cache results
+            if (allPools.length > 0) {
+                cache.set(cacheKey, allPools);
             }
             
             return res.status(200).json({
                 success: true,
-                data: topPools,
-                source: 'defi-llama',
+                data: allPools,
                 cached: false,
-                count: topPools.length,
+                count: allPools.length,
+                source: 'subgraph+defillama',
                 timestamp: new Date().toISOString()
             });
             
         } catch (error) {
             console.error('Error:', error.message);
+            
+            // Fallback to DeFi Llama only
+            try {
+                const response = await axios.get('https://yields.llama.fi/pools', {
+                    timeout: 20000
+                });
+                
+                if (response.data && response.data.data) {
+                    let pools = response.data.data
+                        .filter(p => p.tvlUsd > 1000)
+                        .map(p => ({
+                            id: p.pool,
+                            pair: p.symbol,
+                            dex: p.project.toLowerCase(),
+                            chain: p.chain.toLowerCase(),
+                            tvl: p.tvlUsd,
+                            volume24h: p.volumeUsd1d || 0,
+                            apr: p.apy || p.apyBase || 0,
+                            feeApr: p.apyBase || 0,
+                            fees24h: 0
+                        }));
+                    
+                    // Filter by DEX
+                    if (dex !== 'all') {
+                        pools = pools.filter(p => p.dex.includes(dex));
+                    }
+                    
+                    // Sort and return
+                    pools.sort((a, b) => b.apr - a.apr);
+                    
+                    return res.status(200).json({
+                        success: true,
+                        data: pools.slice(0, 500),
+                        source: 'defillama-fallback',
+                        count: pools.length,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            } catch (fallbackError) {
+                console.error('Fallback error:', fallbackError.message);
+            }
+            
             return res.status(200).json({
                 success: false,
                 data: [],
                 error: error.message,
-                message: 'Failed to fetch pools',
                 timestamp: new Date().toISOString()
             });
         }
     }
     
-    // 404
     return res.status(404).json({
-        error: 'Not found',
-        endpoints: [
-            '/api/health',
-            '/api/pools/all',
-            '/api/pools/pancakeswap',
-            '/api/pools/uniswap',
-            '/api/cache/clear'
-        ]
+        error: 'Not found'
     });
 };
