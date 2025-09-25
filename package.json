@@ -1,5 +1,5 @@
 {
-  "name": "lp-screener",
+  "name": "farm-screener",
   "version": "1.0.0",
   "description": "DeFi Liquidity Pool Screener for PancakeSwap & Uniswap",
   "main": "api/index.js",
@@ -13,6 +13,6 @@
     "node-cache": "^5.1.2"
   },
   "engines": {
-    "node": "18.x"
+    "node": "22.x"
   }
 }
