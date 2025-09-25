@@ -1,220 +1,118 @@
-// =====================================
-// 3. api/index.js (Backend API untuk Vercel)
-// =====================================
+// api/index.js - Using alternative APIs
 const axios = require('axios');
 const NodeCache = require('node-cache');
 
-// Cache dengan TTL 5 menit
 const cache = new NodeCache({ stdTTL: 300 });
 
-// API Configuration
-const API_CONFIG = {
-    pancakeswap: {
-        v3: 'https://api.thegraph.com/subgraphs/name/pancakeswap/exchange-v3-bsc',
-        v2: 'https://api.thegraph.com/subgraphs/name/pancakeswap/exchange-v2'
-    },
-    uniswap: {
-        v3: 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3',
-        v2: 'https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v2'
-    }
-};
-
-// Helper function untuk GraphQL request
-async function graphQLRequest(url, query) {
+// Fetch from DeFi Llama (free, no rate limit)
+async function fetchFromDefiLlama() {
     try {
-        const response = await axios.post(url, {
-            query: query
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-            }
+        console.log('Fetching from DeFi Llama...');
+        
+        // Get pools data from DeFi Llama
+        const response = await axios.get(
+            'https://yields.llama.fi/pools',
+            { timeout: 15000 }
+        );
+        
+        if (response.data && response.data.data) {
+            // Filter for Uniswap and PancakeSwap pools
+            const pools = response.data.data.filter(pool => 
+                (pool.project === 'pancakeswap' || pool.project === 'uniswap-v2' || pool.project === 'uniswap-v3') &&
+                pool.tvlUsd > 50000 &&
+                pool.symbol && 
+                pool.symbol.includes('-')
+            );
+            
+            console.log(`Found ${pools.length} pools from DeFi Llama`);
+            
+            return pools.map(pool => {
+                const [token0, token1] = pool.symbol.split('-');
+                const isUniswap = pool.project.includes('uniswap');
+                
+                return {
+                    id: pool.pool,
+                    pair: pool.symbol.replace('-', '/'),
+                    dex: isUniswap ? 'uniswap' : 'pancakeswap',
+                    version: pool.project.includes('v3') ? 'V3' : 'V2',
+                    tvl: pool.tvlUsd || 0,
+                    volume24h: pool.volumeUsd1d || 0,
+                    feeTier: isUniswap ? 0.003 : 0.0025,
+                    token0: token0,
+                    token1: token1,
+                    apyBase: pool.apyBase || 0,
+                    apyReward: pool.apyReward || 0,
+                    chain: pool.chain
+                };
+            });
+        }
+    } catch (error) {
+        console.error('DeFi Llama error:', error.message);
+    }
+    
+    return [];
+}
+
+// Alternative: Fetch from 1inch API
+async function fetchFrom1inch() {
+    try {
+        console.log('Fetching from 1inch...');
+        
+        // BSC pools
+        const bscResponse = await axios.get(
+            'https://api.1inch.io/v5.0/56/liquidity-sources',
+            { timeout: 10000 }
+        );
+        
+        // Ethereum pools  
+        const ethResponse = await axios.get(
+            'https://api.1inch.io/v5.0/1/liquidity-sources',
+            { timeout: 10000 }
+        );
+        
+        // Process and combine results
+        // Note: 1inch doesn't provide TVL/Volume directly
+        
+    } catch (error) {
+        console.error('1inch API error:', error.message);
+    }
+    
+    return [];
+}
+
+// Backup: Generate sample pools for testing
+function generateSamplePools() {
+    const tokens = ['WETH', 'USDT', 'USDC', 'WBNB', 'BUSD', 'DAI', 'MATIC', 'LINK', 'UNI', 'AAVE'];
+    const pools = [];
+    
+    for (let i = 0; i < 20; i++) {
+        const token0 = tokens[Math.floor(Math.random() * tokens.length)];
+        let token1 = tokens[Math.floor(Math.random() * tokens.length)];
+        while (token1 === token0) {
+            token1 = tokens[Math.floor(Math.random() * tokens.length)];
+        }
+        
+        const tvl = Math.random() * 10000000 + 100000;
+        const volume = tvl * (Math.random() * 0.5 + 0.1);
+        const dex = Math.random() > 0.5 ? 'pancakeswap' : 'uniswap';
+        
+        pools.push({
+            id: `0x${i.toString(16).padStart(4, '0')}`,
+            pair: `${token0}/${token1}`,
+            dex: dex,
+            version: Math.random() > 0.5 ? 'V3' : 'V2',
+            tvl: tvl,
+            volume24h: volume,
+            feeTier: dex === 'uniswap' ? 0.003 : 0.0025,
+            token0: token0,
+            token1: token1
         });
-        return response.data;
-    } catch (error) {
-        console.error(`GraphQL Error for ${url}:`, error.message);
-        throw error;
-    }
-}
-
-// Fetch PancakeSwap pools
-async function fetchPancakeSwapPools() {
-    const cacheKey = 'pancakeswap_pools';
-    const cached = cache.get(cacheKey);
-    
-    if (cached) {
-        console.log('Returning cached PancakeSwap data');
-        return cached;
     }
     
-    const queryV3 = `{
-        pools(first: 100, orderBy: totalValueLockedUSD, orderDirection: desc, where: {totalValueLockedUSD_gt: "50000"}) {
-            id
-            token0 { symbol, decimals }
-            token1 { symbol, decimals }
-            totalValueLockedUSD
-            volumeUSD
-            feeTier
-            poolDayData(first: 1, orderBy: date, orderDirection: desc) {
-                volumeUSD
-                feesUSD
-                tvlUSD
-            }
-        }
-    }`;
-    
-    const queryV2 = `{
-        pairs(first: 100, orderBy: reserveUSD, orderDirection: desc, where: {reserveUSD_gt: "50000"}) {
-            id
-            token0 { symbol }
-            token1 { symbol }
-            reserveUSD
-            volumeUSD
-            pairDayDatas(first: 1, orderBy: date, orderDirection: desc) {
-                dailyVolumeUSD
-                reserveUSD
-            }
-        }
-    }`;
-    
-    let pools = [];
-    
-    try {
-        const dataV3 = await graphQLRequest(API_CONFIG.pancakeswap.v3, queryV3);
-        if (dataV3.data && dataV3.data.pools) {
-            pools = pools.concat(dataV3.data.pools.map(pool => ({
-                id: pool.id,
-                pair: `${pool.token0.symbol}/${pool.token1.symbol}`,
-                dex: 'pancakeswap',
-                tvl: parseFloat(pool.totalValueLockedUSD || 0),
-                volume24h: pool.poolDayData && pool.poolDayData[0] 
-                    ? parseFloat(pool.poolDayData[0].volumeUSD || 0)
-                    : parseFloat(pool.volumeUSD || 0),
-                feeTier: parseInt(pool.feeTier) / 1000000,
-                token0: pool.token0.symbol,
-                token1: pool.token1.symbol,
-                version: 'V3'
-            })));
-        }
-    } catch (error) {
-        console.error('Error fetching PancakeSwap V3:', error.message);
-    }
-    
-    try {
-        const dataV2 = await graphQLRequest(API_CONFIG.pancakeswap.v2, queryV2);
-        if (dataV2.data && dataV2.data.pairs) {
-            pools = pools.concat(dataV2.data.pairs.map(pair => ({
-                id: pair.id,
-                pair: `${pair.token0.symbol}/${pair.token1.symbol}`,
-                dex: 'pancakeswap',
-                tvl: parseFloat(pair.reserveUSD || 0),
-                volume24h: pair.pairDayDatas && pair.pairDayDatas[0]
-                    ? parseFloat(pair.pairDayDatas[0].dailyVolumeUSD || 0)
-                    : 0,
-                feeTier: 0.0025,
-                token0: pair.token0.symbol,
-                token1: pair.token1.symbol,
-                version: 'V2'
-            })));
-        }
-    } catch (error) {
-        console.error('Error fetching PancakeSwap V2:', error.message);
-    }
-    
-    cache.set(cacheKey, pools);
     return pools;
 }
 
-// Fetch Uniswap pools
-async function fetchUniswapPools() {
-    const cacheKey = 'uniswap_pools';
-    const cached = cache.get(cacheKey);
-    
-    if (cached) {
-        console.log('Returning cached Uniswap data');
-        return cached;
-    }
-    
-    const queryV3 = `{
-        pools(first: 100, orderBy: totalValueLockedUSD, orderDirection: desc, where: {totalValueLockedUSD_gt: "100000"}) {
-            id
-            token0 { symbol, decimals }
-            token1 { symbol, decimals }
-            totalValueLockedUSD
-            volumeUSD
-            feeTier
-            poolDayData(first: 1, orderBy: date, orderDirection: desc) {
-                volumeUSD
-                feesUSD
-                tvlUSD
-            }
-        }
-    }`;
-    
-    const queryV2 = `{
-        pairs(first: 100, orderBy: reserveUSD, orderDirection: desc, where: {reserveUSD_gt: "100000"}) {
-            id
-            token0 { symbol }
-            token1 { symbol }
-            reserveUSD
-            volumeUSD
-            pairDayDatas(first: 1, orderBy: date, orderDirection: desc) {
-                dailyVolumeUSD
-                reserveUSD
-            }
-        }
-    }`;
-    
-    let pools = [];
-    
-    try {
-        const dataV3 = await graphQLRequest(API_CONFIG.uniswap.v3, queryV3);
-        if (dataV3.data && dataV3.data.pools) {
-            pools = pools.concat(dataV3.data.pools.map(pool => ({
-                id: pool.id,
-                pair: `${pool.token0.symbol}/${pool.token1.symbol}`,
-                dex: 'uniswap',
-                tvl: parseFloat(pool.totalValueLockedUSD || 0),
-                volume24h: pool.poolDayData && pool.poolDayData[0]
-                    ? parseFloat(pool.poolDayData[0].volumeUSD || 0)
-                    : parseFloat(pool.volumeUSD || 0),
-                feeTier: parseInt(pool.feeTier) / 1000000,
-                token0: pool.token0.symbol,
-                token1: pool.token1.symbol,
-                version: 'V3'
-            })));
-        }
-    } catch (error) {
-        console.error('Error fetching Uniswap V3:', error.message);
-    }
-    
-    try {
-        const dataV2 = await graphQLRequest(API_CONFIG.uniswap.v2, queryV2);
-        if (dataV2.data && dataV2.data.pairs) {
-            pools = pools.concat(dataV2.data.pairs.map(pair => ({
-                id: pair.id,
-                pair: `${pair.token0.symbol}/${pair.token1.symbol}`,
-                dex: 'uniswap',
-                tvl: parseFloat(pair.reserveUSD || 0),
-                volume24h: pair.pairDayDatas && pair.pairDayDatas[0]
-                    ? parseFloat(pair.pairDayDatas[0].dailyVolumeUSD || 0)
-                    : 0,
-                feeTier: 0.003,
-                token0: pair.token0.symbol,
-                token1: pair.token1.symbol,
-                version: 'V2'
-            })));
-        }
-    } catch (error) {
-        console.error('Error fetching Uniswap V2:', error.message);
-    }
-    
-    cache.set(cacheKey, pools);
-    return pools;
-}
-
-// Main handler for Vercel
 module.exports = async (req, res) => {
-    // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -223,7 +121,8 @@ module.exports = async (req, res) => {
         return res.status(200).end();
     }
     
-    const { pathname, searchParams } = new URL(req.url, `http://${req.headers.host}`);
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const pathname = url.pathname;
     
     // Health check
     if (pathname === '/api/health') {
@@ -232,51 +131,6 @@ module.exports = async (req, res) => {
             cache: cache.getStats(),
             timestamp: new Date().toISOString()
         });
-    }
-    
-    // Get pools
-    if (pathname.startsWith('/api/pools/')) {
-        const dex = pathname.split('/').pop();
-        
-        try {
-            let pools = [];
-            
-            if (dex === 'all' || dex === 'pancakeswap') {
-                const pancakePools = await fetchPancakeSwapPools();
-                pools = pools.concat(pancakePools);
-            }
-            
-            if (dex === 'all' || dex === 'uniswap') {
-                const uniswapPools = await fetchUniswapPools();
-                pools = pools.concat(uniswapPools);
-            }
-            
-            // Calculate APR
-            const poolsWithAPR = pools.map(pool => {
-                const fees24h = pool.volume24h * pool.feeTier;
-                const feeApr = pool.tvl > 0 ? (fees24h * 365 / pool.tvl) * 100 : 0;
-                
-                return {
-                    ...pool,
-                    fees24h,
-                    feeApr,
-                    apr: feeApr
-                };
-            });
-            
-            return res.status(200).json({
-                success: true,
-                data: poolsWithAPR,
-                timestamp: new Date().toISOString()
-            });
-            
-        } catch (error) {
-            console.error('API Error:', error);
-            return res.status(500).json({
-                success: false,
-                error: error.message
-            });
-        }
     }
     
     // Clear cache
@@ -288,15 +142,99 @@ module.exports = async (req, res) => {
         });
     }
     
-    // Default response
+    // Get pools
+    if (pathname.startsWith('/api/pools/')) {
+        const dex = pathname.split('/').pop();
+        
+        try {
+            // Check cache
+            const cacheKey = `pools_${dex}`;
+            const cachedData = cache.get(cacheKey);
+            
+            if (cachedData && cachedData.length > 0) {
+                return res.status(200).json({
+                    success: true,
+                    data: cachedData,
+                    cached: true,
+                    timestamp: new Date().toISOString()
+                });
+            }
+            
+            let allPools = [];
+            
+            // Try DeFi Llama first (most reliable)
+            const defiLlamaPools = await fetchFromDefiLlama();
+            
+            if (defiLlamaPools.length > 0) {
+                allPools = defiLlamaPools;
+                console.log('Using DeFi Llama data');
+            } else {
+                // Fallback to sample data for demo
+                console.log('Using sample data as fallback');
+                allPools = generateSamplePools();
+            }
+            
+            // Filter by DEX if needed
+            if (dex !== 'all') {
+                allPools = allPools.filter(pool => pool.dex === dex);
+            }
+            
+            // Calculate APR
+            const poolsWithAPR = allPools.map(pool => {
+                const fees24h = pool.volume24h * pool.feeTier;
+                const feeApr = pool.tvl > 0 ? (fees24h * 365 / pool.tvl) * 100 : 0;
+                
+                return {
+                    ...pool,
+                    fees24h: fees24h,
+                    feeApr: feeApr,
+                    apr: pool.apyBase || feeApr // Use DeFi Llama APY if available
+                };
+            });
+            
+            // Sort by APR
+            poolsWithAPR.sort((a, b) => b.apr - a.apr);
+            
+            // Limit to top 100 pools
+            const topPools = poolsWithAPR.slice(0, 100);
+            
+            // Cache if we have data
+            if (topPools.length > 0) {
+                cache.set(cacheKey, topPools);
+            }
+            
+            return res.status(200).json({
+                success: true,
+                data: topPools,
+                source: defiLlamaPools.length > 0 ? 'defi-llama' : 'sample',
+                cached: false,
+                count: topPools.length,
+                timestamp: new Date().toISOString()
+            });
+            
+        } catch (error) {
+            console.error('API Error:', error.message);
+            
+            // Return sample data on error
+            const samplePools = generateSamplePools();
+            const poolsWithAPR = samplePools.map(pool => {
+                const fees24h = pool.volume24h * pool.feeTier;
+                const feeApr = pool.tvl > 0 ? (fees24h * 365 / pool.tvl) * 100 : 0;
+                return { ...pool, fees24h, feeApr, apr: feeApr };
+            });
+            
+            return res.status(200).json({
+                success: true,
+                data: poolsWithAPR,
+                source: 'sample',
+                error: error.message,
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+    
     return res.status(404).json({
-        error: 'Not Found',
-        availableEndpoints: [
-            '/api/health',
-            '/api/pools/all',
-            '/api/pools/pancakeswap',
-            '/api/pools/uniswap',
-            '/api/cache/clear (POST)'
-        ]
+        error: 'Not found',
+        endpoints: ['/api/health', '/api/pools/all', '/api/pools/pancakeswap', '/api/pools/uniswap']
     });
 };
