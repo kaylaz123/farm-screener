@@ -313,11 +313,37 @@
         <div class="controls">
             <div class="control-group">
                 <div class="control-item">
+                    <label>Blockchain Network</label>
+                    <select id="chainSelect">
+                        <option value="all">All Chains</option>
+                        <option value="eth">Ethereum</option>
+                        <option value="bsc">BSC (Binance)</option>
+                        <option value="polygon">Polygon</option>
+                        <option value="arbitrum">Arbitrum</option>
+                        <option value="optimism">Optimism</option>
+                        <option value="avax">Avalanche</option>
+                        <option value="base">Base</option>
+                        <option value="fantom">Fantom</option>
+                        <option value="gnosis">Gnosis</option>
+                        <option value="celo">Celo</option>
+                        <option value="moonbeam">Moonbeam</option>
+                    </select>
+                </div>
+                <div class="control-item">
                     <label>DEX Platform</label>
                     <select id="dexSelect">
-                        <option value="all">All Platforms</option>
-                        <option value="pancakeswap">PancakeSwap (BSC)</option>
-                        <option value="uniswap">Uniswap (ETH)</option>
+                        <option value="all">All DEXes</option>
+                        <option value="pancakeswap">PancakeSwap</option>
+                        <option value="uniswap">Uniswap</option>
+                        <option value="sushiswap">SushiSwap</option>
+                        <option value="curve">Curve</option>
+                        <option value="balancer">Balancer</option>
+                        <option value="quickswap">QuickSwap</option>
+                        <option value="traderjoe">Trader Joe</option>
+                        <option value="velodrome">Velodrome</option>
+                        <option value="aerodrome">Aerodrome</option>
+                        <option value="thena">Thena</option>
+                        <option value="camelot">Camelot</option>
                     </select>
                 </div>
                 <div class="control-item">
@@ -330,11 +356,7 @@
                 </div>
                 <div class="control-item">
                     <label>Min APR (%)</label>
-                    <input type="number" id="minApr" placeholder="10" value="10">
-                </div>
-                <div class="control-item">
-                    <label>Max APR (%)</label>
-                    <input type="number" id="maxApr" placeholder="500" value="500">
+                    <input type="number" id="minApr" placeholder="1" value="1">
                 </div>
             </div>
             <div class="button-group">
@@ -385,11 +407,13 @@
                         <th onclick="sortTable('pair')">Pool Pair ↕</th>
                         <th onclick="sortTable('version')">Version ↕</th>
                         <th onclick="sortTable('dex')">DEX ↕</th>
+                        <th onclick="sortTable('chain')">Chain ↕</th>
                         <th onclick="sortTable('tvl')">TVL ↕</th>
                         <th onclick="sortTable('volume24h')">Volume 24h ↕</th>
                         <th onclick="sortTable('fees24h')">Fees 24h ↕</th>
                         <th onclick="sortTable('apr')">Real APR ↕</th>
                         <th onclick="sortTable('feeApr')">Fee APR ↕</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody id="poolsBody"></tbody>
@@ -444,15 +468,16 @@
             
             try {
                 const dexSelect = document.getElementById('dexSelect').value;
+                const chainSelect = document.getElementById('chainSelect').value;
                 
-                // Check server connection first
-                const isConnected = await checkServerConnection();
-                if (!isConnected) {
-                    throw new Error('Cannot connect to backend server. Make sure the server is running.');
+                // Build API URL with chain parameter
+                let apiUrl = `/api/pools/${dexSelect}`;
+                if (chainSelect !== 'all') {
+                    apiUrl += `?chain=${chainSelect}`;
                 }
                 
                 // Fetch from backend API
-                const response = await fetch(`${API_BASE_URL}/api/pools/${dexSelect}`);
+                const response = await fetch(apiUrl);
                 
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -484,7 +509,7 @@
                 console.error('Error:', error);
                 errorDiv.innerHTML = `
                     <strong>Error:</strong> ${error.message}<br>
-                    <small>Make sure the backend server is running on port 3001</small>
+                    <small>Make sure the backend server is running</small>
                 `;
                 errorDiv.style.display = 'block';
             } finally {
@@ -497,14 +522,12 @@
             const minTvl = parseFloat(document.getElementById('minTvl').value) || 0;
             const minVolume = parseFloat(document.getElementById('minVolume').value) || 0;
             const minApr = parseFloat(document.getElementById('minApr').value) || 0;
-            const maxApr = parseFloat(document.getElementById('maxApr').value) || Infinity;
             
             filteredPools = allPools.filter(pool => 
                 pool.tvl >= minTvl &&
                 pool.volume24h >= minVolume &&
                 pool.apr >= minApr &&
-                pool.apr <= maxApr &&
-                isFinite(pool.apr) // Filter out invalid APR values
+                isFinite(pool.apr)
             );
             
             displayPools();
@@ -530,7 +553,7 @@
                 let aVal = a[sortColumn];
                 let bVal = b[sortColumn];
                 
-                if (sortColumn === 'pair' || sortColumn === 'dex' || sortColumn === 'version') {
+                if (sortColumn === 'pair' || sortColumn === 'dex' || sortColumn === 'version' || sortColumn === 'chain') {
                     aVal = aVal.toLowerCase();
                     bVal = bVal.toLowerCase();
                 }
@@ -541,6 +564,25 @@
                     return aVal < bVal ? 1 : -1;
                 }
             });
+            
+            // Generate pool link based on DEX
+            function getPoolLink(pool) {
+                const baseUrls = {
+                    'pancakeswap': 'https://pancakeswap.finance/liquidity',
+                    'uniswap': 'https://app.uniswap.org/pools',
+                    'sushiswap': 'https://www.sushi.com/pool',
+                    'curve': 'https://curve.fi/pools',
+                    'balancer': 'https://app.balancer.fi/#/pools',
+                    'quickswap': 'https://quickswap.exchange/#/pools',
+                    'traderjoe': 'https://traderjoexyz.com/pool',
+                    'velodrome': 'https://app.velodrome.finance/liquidity',
+                    'aerodrome': 'https://aerodrome.finance/liquidity',
+                    'thena': 'https://www.thena.fi/liquidity',
+                    'camelot': 'https://app.camelot.exchange/liquidity'
+                };
+                
+                return baseUrls[pool.dex] || '#';
+            }
             
             tbody.innerHTML = filteredPools.map(pool => `
                 <tr>
@@ -559,11 +601,23 @@
                             ${pool.dex.toUpperCase()}
                         </span>
                     </td>
-                    <td>$${formatNumber(pool.tvl)}</td>
-                    <td>$${formatNumber(pool.volume24h)}</td>
-                    <td>$${formatNumber(pool.fees24h)}</td>
+                    <td>
+                        <span style="color: #4a5568; font-size: 0.9rem;">
+                            ${(pool.chain || 'unknown').toUpperCase()}
+                        </span>
+                    </td>
+                    <td>${formatNumber(pool.tvl)}</td>
+                    <td>${formatNumber(pool.volume24h)}</td>
+                    <td>${formatNumber(pool.fees24h)}</td>
                     <td class="apr-value">${pool.apr.toFixed(2)}%</td>
                     <td>${pool.feeApr.toFixed(2)}%</td>
+                    <td>
+                        <a href="${getPoolLink(pool)}" target="_blank" 
+                           style="padding: 4px 8px; background: #667eea; color: white; 
+                                  border-radius: 6px; text-decoration: none; font-size: 0.8rem;">
+                            View →
+                        </a>
+                    </td>
                 </tr>
             `).join('');
         }
@@ -609,11 +663,11 @@
         }
 
         function resetFilters() {
+            document.getElementById('chainSelect').value = 'all';
             document.getElementById('dexSelect').value = 'all';
             document.getElementById('minTvl').value = '100000';
             document.getElementById('minVolume').value = '50000';
-            document.getElementById('minApr').value = '10';
-            document.getElementById('maxApr').value = '500';
+            document.getElementById('minApr').value = '1';
             
             if (allPools.length > 0) {
                 applyFilters();
