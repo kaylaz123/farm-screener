@@ -1,0 +1,11 @@
+// =====================================
+// 4. .gitignore
+// =====================================
+node_modules/
+.vercel
+.env
+.env.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
