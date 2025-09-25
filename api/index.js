@@ -1,21 +1,11 @@
-// server.js - Backend server untuk handle API calls
-const express = require('express');
-const cors = require('cors');
+// =====================================
+// 3. api/index.js (Backend API untuk Vercel)
+// =====================================
 const axios = require('axios');
 const NodeCache = require('node-cache');
 
-const app = express();
-const PORT = process.env.PORT || 3001;
-
 // Cache dengan TTL 5 menit
 const cache = new NodeCache({ stdTTL: 300 });
-
-// Enable CORS
-app.use(cors());
-app.use(express.json());
-
-// Serve static files (HTML, CSS, JS)
-app.use(express.static('public'));
 
 // API Configuration
 const API_CONFIG = {
@@ -89,7 +79,6 @@ async function fetchPancakeSwapPools() {
     let pools = [];
     
     try {
-        // Fetch V3 pools
         const dataV3 = await graphQLRequest(API_CONFIG.pancakeswap.v3, queryV3);
         if (dataV3.data && dataV3.data.pools) {
             pools = pools.concat(dataV3.data.pools.map(pool => ({
@@ -111,7 +100,6 @@ async function fetchPancakeSwapPools() {
     }
     
     try {
-        // Fetch V2 pairs
         const dataV2 = await graphQLRequest(API_CONFIG.pancakeswap.v2, queryV2);
         if (dataV2.data && dataV2.data.pairs) {
             pools = pools.concat(dataV2.data.pairs.map(pair => ({
@@ -122,7 +110,7 @@ async function fetchPancakeSwapPools() {
                 volume24h: pair.pairDayDatas && pair.pairDayDatas[0]
                     ? parseFloat(pair.pairDayDatas[0].dailyVolumeUSD || 0)
                     : 0,
-                feeTier: 0.0025, // PancakeSwap V2 default fee
+                feeTier: 0.0025,
                 token0: pair.token0.symbol,
                 token1: pair.token1.symbol,
                 version: 'V2'
@@ -132,9 +120,7 @@ async function fetchPancakeSwapPools() {
         console.error('Error fetching PancakeSwap V2:', error.message);
     }
     
-    // Cache the results
     cache.set(cacheKey, pools);
-    
     return pools;
 }
 
@@ -181,7 +167,6 @@ async function fetchUniswapPools() {
     let pools = [];
     
     try {
-        // Fetch V3 pools
         const dataV3 = await graphQLRequest(API_CONFIG.uniswap.v3, queryV3);
         if (dataV3.data && dataV3.data.pools) {
             pools = pools.concat(dataV3.data.pools.map(pool => ({
@@ -203,7 +188,6 @@ async function fetchUniswapPools() {
     }
     
     try {
-        // Fetch V2 pairs
         const dataV2 = await graphQLRequest(API_CONFIG.uniswap.v2, queryV2);
         if (dataV2.data && dataV2.data.pairs) {
             pools = pools.concat(dataV2.data.pairs.map(pair => ({
@@ -214,7 +198,7 @@ async function fetchUniswapPools() {
                 volume24h: pair.pairDayDatas && pair.pairDayDatas[0]
                     ? parseFloat(pair.pairDayDatas[0].dailyVolumeUSD || 0)
                     : 0,
-                feeTier: 0.003, // Uniswap V2 default fee
+                feeTier: 0.003,
                 token0: pair.token0.symbol,
                 token1: pair.token1.symbol,
                 version: 'V2'
@@ -224,109 +208,95 @@ async function fetchUniswapPools() {
         console.error('Error fetching Uniswap V2:', error.message);
     }
     
-    // Cache the results
     cache.set(cacheKey, pools);
-    
     return pools;
 }
 
-// API Endpoints
-app.get('/api/pools/:dex', async (req, res) => {
-    try {
-        const { dex } = req.params;
-        let pools = [];
-        
-        if (dex === 'all' || dex === 'pancakeswap') {
-            const pancakePools = await fetchPancakeSwapPools();
-            pools = pools.concat(pancakePools);
-        }
-        
-        if (dex === 'all' || dex === 'uniswap') {
-            const uniswapPools = await fetchUniswapPools();
-            pools = pools.concat(uniswapPools);
-        }
-        
-        // Calculate APR for each pool
-        const poolsWithAPR = pools.map(pool => {
-            const fees24h = pool.volume24h * pool.feeTier;
-            const feeApr = (fees24h * 365 / pool.tvl) * 100;
-            
-            return {
-                ...pool,
-                fees24h,
-                feeApr,
-                apr: feeApr // Could be adjusted with IL calculations
-            };
-        });
-        
-        res.json({
-            success: true,
-            data: poolsWithAPR,
+// Main handler for Vercel
+module.exports = async (req, res) => {
+    // Enable CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+    
+    const { pathname, searchParams } = new URL(req.url, `http://${req.headers.host}`);
+    
+    // Health check
+    if (pathname === '/api/health') {
+        return res.status(200).json({
+            status: 'healthy',
+            cache: cache.getStats(),
             timestamp: new Date().toISOString()
         });
+    }
+    
+    // Get pools
+    if (pathname.startsWith('/api/pools/')) {
+        const dex = pathname.split('/').pop();
         
-    } catch (error) {
-        console.error('API Error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
+        try {
+            let pools = [];
+            
+            if (dex === 'all' || dex === 'pancakeswap') {
+                const pancakePools = await fetchPancakeSwapPools();
+                pools = pools.concat(pancakePools);
+            }
+            
+            if (dex === 'all' || dex === 'uniswap') {
+                const uniswapPools = await fetchUniswapPools();
+                pools = pools.concat(uniswapPools);
+            }
+            
+            // Calculate APR
+            const poolsWithAPR = pools.map(pool => {
+                const fees24h = pool.volume24h * pool.feeTier;
+                const feeApr = pool.tvl > 0 ? (fees24h * 365 / pool.tvl) * 100 : 0;
+                
+                return {
+                    ...pool,
+                    fees24h,
+                    feeApr,
+                    apr: feeApr
+                };
+            });
+            
+            return res.status(200).json({
+                success: true,
+                data: poolsWithAPR,
+                timestamp: new Date().toISOString()
+            });
+            
+        } catch (error) {
+            console.error('API Error:', error);
+            return res.status(500).json({
+                success: false,
+                error: error.message
+            });
+        }
+    }
+    
+    // Clear cache
+    if (pathname === '/api/cache/clear' && req.method === 'POST') {
+        cache.flushAll();
+        return res.status(200).json({
+            success: true,
+            message: 'Cache cleared'
         });
     }
-});
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'healthy',
-        cache: cache.getStats(),
-        timestamp: new Date().toISOString()
+    
+    // Default response
+    return res.status(404).json({
+        error: 'Not Found',
+        availableEndpoints: [
+            '/api/health',
+            '/api/pools/all',
+            '/api/pools/pancakeswap',
+            '/api/pools/uniswap',
+            '/api/cache/clear (POST)'
+        ]
     });
-});
-
-// Clear cache endpoint
-app.post('/api/cache/clear', (req, res) => {
-    cache.flushAll();
-    res.json({
-        success: true,
-        message: 'Cache cleared'
-    });
-});
-
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log('API endpoints:');
-    console.log(`  GET  /api/pools/:dex (all, pancakeswap, uniswap)`);
-    console.log(`  GET  /api/health`);
-    console.log(`  POST /api/cache/clear`);
-});
-
-// package.json
-/*
-{
-  "name": "lp-screener-backend",
-  "version": "1.0.0",
-  "description": "Backend for DeFi LP Screener",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "axios": "^1.6.2",
-    "node-cache": "^5.1.2",
-    "dotenv": "^16.3.1"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
-  }
-}
-*/
-
-// .env file (optional untuk production)
-/*
-PORT=3001
-CACHE_TTL=300
-NODE_ENV=production
-*/
+};
